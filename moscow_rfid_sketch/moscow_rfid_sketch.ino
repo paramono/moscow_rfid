@@ -6,6 +6,10 @@
 #define OTP_PAGE            3
 #define OTP_INDEX  OTP_PAGE*4
 
+#define DATA_PIN    8 
+#define LATCH_PIN   7 
+#define CLOCK_PIN   6 
+
 MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
 
 typedef enum STATE_T {
@@ -28,6 +32,13 @@ byte OTP_LIST[] = {
     0xFF, 0xFF, 0xFF, 0xFC,  // F_OLD_UNITY
     0x00, 0x7F, 0xFF, 0xFC,  // F_2016_09_UNITY
     0x00, 0x00, 0x00, 0x00   // F_2016_09_TAT
+};
+
+// in order: A, B, C, D, E, F, G, H
+// H is reserved for floating point
+byte SEGMENTS[10] = {
+    0b11111100, 0b01100000, 0b11011010, 0b11110010, 0b01100110,
+    0b10110110, 0b10111110, 0b11100000, 0b11111110, 0b11110110
 };
 
 /* Formats:
@@ -99,13 +110,23 @@ Format get_format(byte* buffer) {
 }
 
 
+void send_to_register(int data) {
+    digitalWrite(LATCH_PIN, LOW);
+    shiftOut(DATA_PIN, CLOCK_PIN, LSBFIRST, data);
+    digitalWrite(LATCH_PIN, HIGH);
+}
+
+
 void setup() {
     Serial.begin(9600);   // Initialize serial communications with the PC
     while (!Serial);    // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
     SPI.begin();      // Init SPI bus
     mfrc522.PCD_Init();   // Init MFRC522
-    mfrc522.PCD_DumpVersionToSerial();  // Show details of PCD -м MFRC522 Card Reader details
-    Serial.println(F("Scan PICC to see UID, SAK, type, and data blocks..."));
+    mfrc522.PCD_DumpVersionToSerial();  // Show details of PCD -м MFRC522 Card Reader details    
+
+    pinMode(DATA_PIN, OUTPUT);
+    pinMode(CLOCK_PIN, OUTPUT);
+    pinMode(LATCH_PIN, OUTPUT);
 }
 
 
