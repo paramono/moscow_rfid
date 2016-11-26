@@ -1,9 +1,10 @@
 #include <SPI.h>
 #include <MFRC522.h>
 
-#define RST_PIN         9          // Configurable, see typical pin layout above
-#define SS_PIN          10         // Configurable, see typical pin layout above
-
+#define RST_PIN             9  // Configurable, see typical pin layout above
+#define SS_PIN             10  // Configurable, see typical pin layout above
+#define OTP_PAGE            3
+#define OTP_INDEX  OTP_PAGE*4
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
 
@@ -14,9 +15,43 @@ typedef enum STATE_T {
   ST_SHOW_DUEDATE
 } State;
 
+typedef enum FORMAT_T {
+  F_UNKNOWN = -1,
+  F_OLD_UNITY,  // Единый
+  F_2016_09_UNITY,
+  F_2016_09_TAT,
+  F_LAST           // for iterating
+} Format;
+
+
+byte OTP_LIST[] = {
+    0xFF, 0xFF, 0xFF, 0xFC,  // F_OLD_UNITY
+    0x00, 0x7F, 0xFF, 0xFC,  // F_2016_09_UNITY
+    0x00, 0x00, 0x00, 0x00   // F_2016_09_TAT
+};
+
+/* Formats:
+ *    F_OLD_UNITY: (http://soltau.ru/index.php/arduino/item/402-kak-prochitat-bilet-na-metro-i-avtobus-s-pomoshchyu-arduino)
+ *        p0b[0-2],p1b[0-3] - UID
+ *        p2b[2-3] - Lock Bytes
+ *        p3 - OTP
+ *        p4b[2.5-3]-p5b[0-2.5] - ticket number
+ *        
+ *        p8b[0-1] - date of purchace since 1992-01-01
+ *        p8b2 - validity duration in days
+ *        p9b1 - Number of rides left
+ *        p10 - checksum
+ *        p11b0,p11b1 - date of last use
+ *        
+ *        p12-p15 are a copy of p8-p11
+ *        
+ *    F_2016_09_UNITY:
+ *        p8b0 - Number of rides left
+ */
 
 State state = ST_IDLE;
-byte num_rides;
+Format format = F_OLD_UNITY;
+byte num_rides = 0;
 
 
 inline byte to_offset(byte read_page, byte target_page, byte offset) {
@@ -28,24 +63,60 @@ inline byte get_byte(byte* buffer, byte read_page, byte target_page, byte offset
     return buffer[i];
 }
 
+
+bool is_page_empty(byte* buffer, byte read_page, byte target_page) {
+    for (byte offset = 0; offset < 4; offset++) {
+        byte data = get_byte(buffer, read_page, target_page, offset); 
+        if (data != 0) {
+            return false; 
+        }
+    }
+    return true;
+}
+
+
+void print_array(byte* arr, byte size) {
+    for (byte i = 0; i < size; i++) {
+        Serial.print(arr[i], HEX);
+        Serial.print(" "); 
+        if ((i + 1) % 4 == 0) {
+          Serial.println();
+        }
+    }
+    Serial.println();
+}
+
+
+Format get_format(byte* buffer) {    
+    for (byte format=0; format < F_LAST; format++) {
+        byte offset = format * 4;
+              
+        if (memcmp(buffer+OTP_INDEX, OTP_LIST+offset, sizeof(byte)*4) == 0) {
+            return format;
+        }
+    }
+    return F_UNKNOWN; // format unknown  
+}
+
+
 void setup() {
-  Serial.begin(9600);   // Initialize serial communications with the PC
-  while (!Serial);    // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
-  SPI.begin();      // Init SPI bus
-  mfrc522.PCD_Init();   // Init MFRC522
-  mfrc522.PCD_DumpVersionToSerial();  // Show details of PCD - MFRC522 Card Reader details
-  Serial.println(F("Scan PICC to see UID, SAK, type, and data blocks..."));
+    Serial.begin(9600);   // Initialize serial communications with the PC
+    while (!Serial);    // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
+    SPI.begin();      // Init SPI bus
+    mfrc522.PCD_Init();   // Init MFRC522
+    mfrc522.PCD_DumpVersionToSerial();  // Show details of PCD -м MFRC522 Card Reader details
+    Serial.println(F("Scan PICC to see UID, SAK, type, and data blocks..."));
 }
 
 
 State do_idle() {
     // Look for new cards
-    if ( ! mfrc522.PICC_IsNewCardPresent()) {
+    if ( !mfrc522.PICC_IsNewCardPresent()) {
         return ST_IDLE;
     }
   
     // Select one of the cards
-    if ( ! mfrc522.PICC_ReadCardSerial()) {
+    if ( !mfrc522.PICC_ReadCardSerial()) {
         return ST_IDLE;
     }
     
@@ -53,80 +124,56 @@ State do_idle() {
 }
 
 
-State do_read() {
-    // mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
+State do_read() { 
     MFRC522::StatusCode status;
     byte byteCount;
     byte buffer[18];
     byte i;
   
-    byte page = 8;
-    bool is_metro = false;
-  
+    byte read_page = 8;
+
     num_rides = 0;
     
     byteCount = sizeof(buffer);
-    // fill buffer with data
-    status = mfrc522.MIFARE_Read(page, buffer, &byteCount);
+    
+    // we need OTP from 3rd page, hence we read 4 first pages starting from 0
+    status = mfrc522.MIFARE_Read(0, buffer, &byteCount);  
     if (status != MFRC522::StatusCode::STATUS_OK) {
         Serial.print(F("MIFARE_Read() failed: "));
         Serial.println(mfrc522.GetStatusCodeName(status));
         return ST_IDLE;    
     }
-  
-    // ride number is either p9b1 (land transport) or p8b0 (underground)
-    // use p8b0 if card has all zeros on page 9 (and page 14)
-    // use p9b1 if card has all zeros of page 8 (and page 15 probably)
-  
-    byte p9b1 = get_byte(buffer, page, 9, 1);
-    if (p9b1 == 0) {
-
-        is_metro = true;
-    }
-    Serial.print("p9b1: ");
-    Serial.println(p9b1);
+    format = get_format(buffer);
+    
         
-    if (is_metro) {
-        num_rides = get_byte(buffer, page, 8, 0);    
-        Serial.println(F("Metro"));
-    } else {
-        num_rides = p9b1;
-        Serial.println(F("Bus"));
+    // fill buffer with data from read_page
+    status = mfrc522.MIFARE_Read(read_page, buffer, &byteCount);
+    if (status != MFRC522::StatusCode::STATUS_OK) {
+        Serial.print(F("MIFARE_Read() failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return ST_IDLE;    
     }
-  
- 
+
+    switch (format) {
+        case F_OLD_UNITY:
+            num_rides = get_byte(buffer, read_page, 9, 1);
+            Serial.println("F_OLD_UNITY");
+            break;
+        case F_2016_09_UNITY:
+            num_rides = get_byte(buffer, read_page, 8, 0);
+            Serial.println("F_2016_09_UNITY");
+            break;
+        case F_2016_09_TAT:
+            num_rides = get_byte(buffer, read_page, 9, 1);    
+            Serial.println("F_2016_09_TAT");
+            break;
+        case F_UNKNOWN:
+        default:
+            Serial.println("UNKNOWN");
+            break;        
+    }  
     
     return ST_SHOW_RIDES;  // FIXME
-  
-//  byte offset = 1;  // page 9
-//  for (byte index = 0; index < 4; index++) { 
-//    i = 4 * offset + index;
-//    if (buffer[i] !=
-//  }
-//  
-//
-//  for (byte offset = 0; offset < 4; offset++) { //vertical
-//      i = page + offset;
-//      for (byte index = 0; index < 4; index++) {
-//          i = 4 * offset + index;
-//          if(buffer[i] < 0x10)
-//              Serial.print(F(" 0"));
-//          else
-//              Serial.print(F(" "));
-//          Serial.print(buffer[i], HEX);
-//      }
-//      Serial.println();
-//    }
-//  
-//  
-//  Serial.println(F("Page  0  1  2  3"));
-//  // Try the mpages of the original Ultralight. Ultralight C has more pages.
-//  for (byte page = 0; page < 16; page +=4) { // Read returns data for 4 pages at a time.
-//    
-//    
-//  }
-//  
-    return ST_IDLE;
 }
 
 
@@ -135,11 +182,13 @@ State do_show_rides() {
     Serial.print("NUM OF RIDES: ");
     Serial.println(num_rides);
 
+    Serial.println("#####");
+    
+    // mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
 }
 
 
 void loop() {
-
     switch(state) {
         case ST_IDLE: 
             state = do_idle();
@@ -150,8 +199,9 @@ void loop() {
         case ST_SHOW_RIDES:
             state = do_show_rides();
             break;
+        case ST_SHOW_DUEDATE:
         default:
+            state = ST_IDLE;
             break;
-
     }
 }
