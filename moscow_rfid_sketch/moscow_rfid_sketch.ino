@@ -6,9 +6,14 @@
 #define OTP_PAGE            3
 #define OTP_INDEX  OTP_PAGE*4
 
-#define DATA_PIN    8 
-#define LATCH_PIN   7 
-#define CLOCK_PIN   6 
+#define DATA_PIN    2 
+#define LATCH_PIN   3 
+#define CLOCK_PIN   4 
+
+#define DISPLAY_BRIGHTNESS  500
+
+#define MAX_NUM_DIGITS  4
+
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
 
@@ -23,6 +28,7 @@ typedef enum FORMAT_T {
   F_UNKNOWN = -1,
   F_OLD_UNITY,  // Единый
   F_2016_09_UNITY,
+  F_2016_12_UNITY,
   F_2016_09_TAT,
   F_LAST           // for iterating
 } Format;
@@ -31,6 +37,7 @@ typedef enum FORMAT_T {
 byte OTP_LIST[] = {
     0xFF, 0xFF, 0xFF, 0xFC,  // F_OLD_UNITY
     0x00, 0x7F, 0xFF, 0xFC,  // F_2016_09_UNITY
+    0x00, 0xFF, 0xFF, 0xFC,  // F_2016_12_UNITY
     0x00, 0x00, 0x00, 0x00   // F_2016_09_TAT
 };
 
@@ -73,6 +80,8 @@ byte SEGMENTS[10] = {
 State state = ST_IDLE;
 Format format = F_OLD_UNITY;
 byte num_rides = 0;
+
+byte count = 0;
 
 
 inline byte to_offset(byte read_page, byte target_page, byte offset) {
@@ -119,11 +128,51 @@ Format get_format(byte* buffer) {
     return F_UNKNOWN; // format unknown  
 }
 
-
-void send_to_register(int data) {
+void send_to_register(byte* data, int num_bytes) {
     digitalWrite(LATCH_PIN, LOW);
-    shiftOut(DATA_PIN, CLOCK_PIN, LSBFIRST, data);
+    for (int i = 0; i < num_bytes; i++) {
+      shiftOut(DATA_PIN, CLOCK_PIN, LSBFIRST, data[i]);      
+    }    
     digitalWrite(LATCH_PIN, HIGH);
+}
+
+void display_number(int number) {
+
+    byte data[2];  
+    long beginTime = millis();
+    bool zero_seq = true;
+
+    int temp_number = number;
+    int num_digits = 1;
+    while ( temp_number /= 10 )
+       num_digits++;
+
+    int shift = floor((MAX_NUM_DIGITS - num_digits)/2.0f);
+        
+    do {
+        temp_number = number; 
+        for(int digit = 0 ; digit < num_digits ; digit++) {
+      
+          //Turn on a digit for a short amount of time
+          int reminder = temp_number % 10;
+          data[0] = SEGMENTS[reminder];
+          
+          int shifted = digit + shift;                       
+          data[1] = 0xFF ^ (0b1000 >> shifted); 
+
+          temp_number /= 10;    
+          send_to_register(data, 2);
+          
+          // Display digit for fraction of a second (1us to 5000us, 500 is pretty good)          
+          delayMicroseconds(DISPLAY_BRIGHTNESS); 
+        }
+    } while( millis() - beginTime < 3000) ; 
+
+    // clear screen
+    data[0] = 0x00;
+    data[1] = 0xFF;
+    send_to_register(data, 2);
+  //Wait for 20ms to pass before we paint the display again
 }
 
 
@@ -193,6 +242,7 @@ State do_read() {
             Serial.println("F_OLD_UNITY");
             break;
         case F_2016_09_UNITY:
+        case F_2016_12_UNITY:
             num_rides = get_byte(buffer, read_page, 8, 0);
             Serial.println("F_2016_09_UNITY");
             break;
@@ -217,11 +267,19 @@ State do_show_rides() {
 
     Serial.println("#####");
     
-    // mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
+    mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
+
+    display_number(num_rides);
+    // send_to_register(0b0000000011111111, 2);
 }
 
 
 void loop() {
+//    if (count == 0) {
+//        byte data[2] = { 0b11111111, 0b00000000};
+//        send_to_register(data, 2);
+//        count++;
+//    }
     switch(state) {
         case ST_IDLE: 
             state = do_idle();
