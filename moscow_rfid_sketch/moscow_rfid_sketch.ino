@@ -36,6 +36,16 @@ byte OTP_LIST[] = {
 
 // in order: A, B, C, D, E, F, G, H
 // H is reserved for floating point
+// in pin notation:
+// A     - 11
+// B     -  7
+// C     -  4
+// D     -  2
+// E     -  1
+// F     - 10
+// G     -  5
+// H(DP) -  3 
+
 byte SEGMENTS[10] = {
     0b11111100, 0b01100000, 0b11011010, 0b11110010, 0b01100110,
     0b10110110, 0b10111110, 0b11100000, 0b11111110, 0b11110110
@@ -164,6 +174,8 @@ State do_read() {
         Serial.println(mfrc522.GetStatusCodeName(status));
         return ST_IDLE;    
     }
+
+    // Get card type (defined by data layout/format)
     format = get_format(buffer);
     
         
